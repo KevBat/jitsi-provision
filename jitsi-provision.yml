@@ -1,0 +1,61 @@
+---
+- hosts: localhost
+  connection: local
+  gather_facts: False
+
+  vars:
+    do_api_key: "{{ lookup('env', 'DO_API_KEY') }}"
+    do_ssh_key: "{{ lookup('env', 'DO_SSH_KEY') }}"
+    domain: "{{ lookup('env', 'DOMAIN') }}"
+    a_record: "{{ lookup('env', 'A_RECORD') }}"
+  
+  tasks:
+    - name: Create new Droplet.
+      digital_ocean_droplet:
+        state: present
+        name: jitsi-server
+        private_networking: yes
+        size: s-4vcpu-8gb
+        #size: s-1vcpu-1gb
+        image: ubuntu-20-04-x64
+        region: nyc3
+        # Customize this for your account.
+        ssh_keys: "{{ do_ssh_key }}"
+        # Required for idempotence/only one droplet creation.
+        unique_name: yes
+      register: do
+
+    - name: Add new host to our inventory.
+      add_host:
+        name: "{{ do.data.ip_address }}"
+        groups: do
+        ansible_ssh_extra_args: '-o StrictHostKeyChecking=no'
+      when: do.data is defined
+      changed_when: False
+
+    - name: Update DNS record with new IP address
+      command: "python3 ./update_record.py {{ do.data.ip_address }} {{ do_api_key }} {{ domain }} {{ a_record }}"
+      register: update_record
+
+    - name: Print output of DNS record update
+      debug:
+        var: update_record.stdout_lines
+
+- hosts: do
+  remote_user: root
+  gather_facts: False
+  become: yes
+
+  vars:
+    domain: "{{ lookup('env', 'DOMAIN') }}"
+    email: "{{ lookup('env', 'EMAIL') }}"
+
+  tasks:
+    - name: Wait for hosts to become reachable.
+      wait_for_connection:
+
+    - name: Install and configure jitsi meet
+      script: "jitsi_script.sh {{ domain }} {{ email }}"
+      register: script_output
+
+    - debug: var=script_output.stdout_lines
